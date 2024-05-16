@@ -19,7 +19,8 @@ public class OrderService {
 
     private final OrderDao orderDao;
     private Map<OrderState, Map<OrderEvent, Transition>> transitionMap;
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10); // Increased thread pool size
+    private final Map<String, Object> orderLocks = new ConcurrentHashMap<>();
 
     public OrderService(OrderDao orderDao) {
         this.orderDao = orderDao;
@@ -59,50 +60,58 @@ public class OrderService {
     }
 
     public OrderState handleEvent(String orderId, OrderEvent event) {
-        Order order = orderDao.findById(orderId);
+        synchronized (getOrderLock(orderId)) {
+            Order order = orderDao.findById(orderId);
 
-        if (order == null) {
-            if (event == OrderEvent.ORDER_CREATED) {
-                // Initialize a new order
-                order = new Order(orderId);
-                log.info("New order created with ID: {}", orderId);
+            if (order == null) {
+                if (event == OrderEvent.ORDER_CREATED) {
+                    // Initialize a new order
+                    order = new Order(orderId);
+                    log.info("New order created with ID: {}", orderId);
+                } else {
+                    log.warn("Invalid order ID: {} for event: {}", orderId, event);
+                    return null;
+                }
+            }
+
+            OrderState currentState = order.state();
+            Transition transition = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
+
+            if (transition != null) {
+                order = order.addStateTransition(currentState, transition.targetState(), event.toString());
+                orderDao.save(order);
+                log.info("Transitioned from {} to {} on event {}", currentState, transition.targetState(), event);
+
+                if (transition.timeoutSeconds() > 0) {
+                    scheduleTimeout(order, transition);
+                }
+
+                return transition.targetState();
             } else {
-                log.warn("Invalid order ID: {} for event: {}", orderId, event);
-                return null;
+                log.warn("Invalid event: {} for current state: {}", event, currentState);
+                return currentState;
             }
-        }
-
-        OrderState currentState = order.state();
-        Transition transition = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
-
-        if (transition != null) {
-            order = order.addStateTransition(currentState, transition.targetState(), event.toString());
-            orderDao.save(order);
-            log.info("Transitioned from {} to {} on event {}", currentState, transition.targetState(), event);
-
-            if (transition.timeoutSeconds() > 0) {
-                scheduleTimeout(order, transition);
-            }
-
-            return transition.targetState();
-        } else {
-            log.warn("Invalid event: {} for current state: {}", event, currentState);
-            return currentState;
         }
     }
 
     private void scheduleTimeout(Order order, Transition transition) {
         scheduler.schedule(() -> {
-            Order latestOrder = orderDao.findById(order.id());
-            if (latestOrder != null && latestOrder.state() == order.state()) {
-                OrderState timeoutState = transition.timeoutFallbackState();
-                if (timeoutState != null) {
-                    latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
-                    orderDao.save(latestOrder);
-                    log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+            synchronized (getOrderLock(order.id())) {
+                Order latestOrder = orderDao.findById(order.id());
+                if (latestOrder != null && latestOrder.state() == order.state()) {
+                    OrderState timeoutState = transition.timeoutFallbackState();
+                    if (timeoutState != null) {
+                        latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
+                        orderDao.save(latestOrder);
+                        log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+                    }
                 }
             }
         }, transition.timeoutSeconds(), TimeUnit.SECONDS);
+    }
+
+    private Object getOrderLock(String orderId) {
+        return orderLocks.computeIfAbsent(orderId, k -> new Object());
     }
 
     public OrderState getCurrentState(String orderId) {

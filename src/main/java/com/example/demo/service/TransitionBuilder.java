@@ -15,6 +15,16 @@ public class TransitionBuilder {
         return this;
     }
 
+    public TransitionBuilder addTransition(OrderState sourceState, OrderEvent event, OrderState targetState, long timeoutSeconds) {
+        transitions.add(new Transition(sourceState, event, targetState, timeoutSeconds));
+        return this;
+    }
+
+    public TransitionBuilder addTransition(OrderState sourceState, OrderEvent event, OrderState targetState, long timeoutSeconds, OrderState timeoutFallbackState) {
+        transitions.add(new Transition(sourceState, event, targetState, timeoutSeconds, timeoutFallbackState));
+        return this;
+    }
+
     public List<Transition> build() {
         return transitions;
     }

@@ -2,6 +2,7 @@ package com.example.demo.service;
 
 import com.example.demo.dto.OrderEvent;
 import com.example.demo.dto.OrderState;
+import com.example.demo.dto.Transition;
 import net.sourceforge.plantuml.SourceStringReader;
 
 import java.io.FileOutputStream;
@@ -10,16 +11,18 @@ import java.util.Map;
 
 public class UMLGenerator {
 
-    public static void generateUMLImage(Map<OrderState, Map<OrderEvent, OrderState>> transitionMap, String filePath) throws IOException {
+    public static void generateUMLImage(Map<OrderState, Map<OrderEvent, Transition>> transitionMap, String filePath) throws IOException {
         StringBuilder uml = new StringBuilder();
         uml.append("@startuml\n");
 
-        for (Map.Entry<OrderState, Map<OrderEvent, OrderState>> entry : transitionMap.entrySet()) {
+        for (Map.Entry<OrderState, Map<OrderEvent, Transition>> entry : transitionMap.entrySet()) {
             OrderState sourceState = entry.getKey();
-            for (Map.Entry<OrderEvent, OrderState> transition : entry.getValue().entrySet()) {
-                OrderEvent event = transition.getKey();
-                OrderState targetState = transition.getValue();
-                uml.append(sourceState).append(" --> ").append(targetState).append(" : ").append(event).append("\n");
+            for (Map.Entry<OrderEvent, Transition> transitionEntry : entry.getValue().entrySet()) {
+                Transition transition = transitionEntry.getValue();
+                uml.append(sourceState).append(" --> ").append(transition.targetState()).append(" : ").append(transition.event()).append("\n");
+                if (transition.timeoutSeconds() > 0 && transition.timeoutFallbackState() != null) {
+                    uml.append(sourceState).append(" --> ").append(transition.timeoutFallbackState()).append(" : Timeout(").append(transition.timeoutSeconds()).append("s)").append("\n");
+                }
             }
         }
 
