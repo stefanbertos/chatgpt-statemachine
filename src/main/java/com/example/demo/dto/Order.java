@@ -14,8 +14,8 @@ public record Order(@Id String id, OrderState state, List<StateTransition> state
         }
     }
 
-    public Order() {
-        this(null, OrderState.NEW_ORDER, new ArrayList<>(List.of(new StateTransition(null, OrderState.NEW_ORDER, "Order created"))));
+    public Order(String id) {
+        this(id, OrderState.NEW_ORDER, new ArrayList<>(List.of(new StateTransition(null, OrderState.NEW_ORDER, "Order created"))));
     }
 
     public Order addStateTransition(OrderState fromState, OrderState toState, String reason) {

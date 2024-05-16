@@ -47,7 +47,14 @@ public class OrderService {
         Order order = orderDao.findById(orderId);
 
         if (order == null) {
-            throw new IllegalArgumentException("Invalid order ID");
+            if (event == OrderEvent.ORDER_CREATED) {
+                // Initialize a new order
+                order = new Order(orderId);
+                log.info("New order created with ID: {}", orderId);
+            } else {
+                log.warn("Invalid order ID: {} for event: {}", orderId, event);
+                return null;
+            }
         }
 
         OrderState currentState = order.state();
