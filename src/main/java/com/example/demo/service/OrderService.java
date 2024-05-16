@@ -1,11 +1,14 @@
 package com.example.demo.service;
 
 import com.example.demo.dto.*;
-import com.example.demo.repository.OrderDao;
+import com.example.demo.repository.*;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -40,6 +43,17 @@ public class OrderService {
             transitionMap
                     .computeIfAbsent(transition.sourceState(), k -> new HashMap<>())
                     .put(transition.event(), transition.targetState());
+        }
+
+        try {
+            // Ensure the directory exists
+            Files.createDirectories(Paths.get("src/main/resources/static"));
+
+            // Generate the UML diagram image
+            UMLGenerator.generateUMLImage(transitionMap, "src/main/resources/static/state_machine_diagram.png");
+            log.info("State machine UML diagram generated at: src/main/resources/static/state_machine_diagram.png");
+        } catch (IOException e) {
+            log.error("Failed to generate UML diagram", e);
         }
     }
 
