@@ -1,7 +1,6 @@
 package com.example.demo.service;
-
 import com.example.demo.dto.*;
-import com.example.demo.repository.*;
+import com.example.demo.repository.OrderDao;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -12,13 +11,15 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.*;
 
 @Slf4j
 @Service
 public class OrderService {
 
     private final OrderDao orderDao;
-    private Map<OrderState, Map<OrderEvent, OrderState>> transitionMap;
+    private Map<OrderState, Map<OrderEvent, Transition>> transitionMap;
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
 
     public OrderService(OrderDao orderDao) {
         this.orderDao = orderDao;
@@ -27,7 +28,7 @@ public class OrderService {
     @PostConstruct
     private void init() {
         TransitionBuilder builder = new TransitionBuilder();
-        builder.addTransition(OrderState.NEW_ORDER, OrderEvent.ORDER_CREATED, OrderState.PENDING_PAYMENT)
+        builder.addTransition(OrderState.NEW_ORDER, OrderEvent.ORDER_CREATED, OrderState.PENDING_PAYMENT, 30, OrderState.CANCELLED)
                 .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.PAYMENT_CONFIRMED, OrderState.PAYMENT_RECEIVED)
                 .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.PAYMENT_FAILED, OrderState.CANCELLED)
                 .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.CUSTOMER_CANCELLATION, OrderState.CANCELLED)
@@ -42,7 +43,7 @@ public class OrderService {
         for (Transition transition : transitions) {
             transitionMap
                     .computeIfAbsent(transition.sourceState(), k -> new HashMap<>())
-                    .put(transition.event(), transition.targetState());
+                    .put(transition.event(), transition);
         }
 
         try {
@@ -72,17 +73,36 @@ public class OrderService {
         }
 
         OrderState currentState = order.state();
-        OrderState newState = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
+        Transition transition = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
 
-        if (newState != null) {
-            order = order.addStateTransition(currentState, newState, event.toString());
+        if (transition != null) {
+            order = order.addStateTransition(currentState, transition.targetState(), event.toString());
             orderDao.save(order);
-            log.info("Transitioned from {} to {} on event {}", currentState, newState, event);
-            return newState;
+            log.info("Transitioned from {} to {} on event {}", currentState, transition.targetState(), event);
+
+            if (transition.timeoutSeconds() > 0) {
+                scheduleTimeout(order, transition);
+            }
+
+            return transition.targetState();
         } else {
             log.warn("Invalid event: {} for current state: {}", event, currentState);
             return currentState;
         }
+    }
+
+    private void scheduleTimeout(Order order, Transition transition) {
+        scheduler.schedule(() -> {
+            Order latestOrder = orderDao.findById(order.id());
+            if (latestOrder != null && latestOrder.state() == order.state()) {
+                OrderState timeoutState = transition.timeoutFallbackState();
+                if (timeoutState != null) {
+                    latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
+                    orderDao.save(latestOrder);
+                    log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+                }
+            }
+        }, transition.timeoutSeconds(), TimeUnit.SECONDS);
     }
 
     public OrderState getCurrentState(String orderId) {
