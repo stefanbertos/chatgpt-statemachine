@@ -7,10 +7,6 @@ import com.example.demo.dto.Transition;
 import java.util.ArrayList;
 import java.util.List;
 
-
-import java.util.ArrayList;
-import java.util.List;
-
 public class TransitionBuilder {
     private final List<Transition> transitions = new ArrayList<>();
 
