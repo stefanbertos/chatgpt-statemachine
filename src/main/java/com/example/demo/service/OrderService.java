@@ -1,5 +1,6 @@
 package com.example.demo.service;
 import com.example.demo.dto.*;
+import com.example.demo.repository.LockDao;
 import com.example.demo.repository.OrderDao;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -11,6 +12,7 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.*;
 
 @Slf4j
@@ -18,12 +20,13 @@ import java.util.concurrent.*;
 public class OrderService {
 
     private final OrderDao orderDao;
+    private final LockDao lockDao;
     private Map<OrderState, Map<OrderEvent, Transition>> transitionMap;
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10); // Increased thread pool size
-    private final Map<String, Object> orderLocks = new ConcurrentHashMap<>();
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10);
 
-    public OrderService(OrderDao orderDao) {
+    public OrderService(OrderDao orderDao, LockDao lockDao) {
         this.orderDao = orderDao;
+        this.lockDao = lockDao;
     }
 
     @PostConstruct
@@ -60,7 +63,13 @@ public class OrderService {
     }
 
     public OrderState handleEvent(String orderId, OrderEvent event) {
-        synchronized (getOrderLock(orderId)) {
+        String owner = UUID.randomUUID().toString();
+        if (!lockDao.acquireLock(orderId, owner)) {
+            log.warn("Could not acquire lock for order ID: {}", orderId);
+            return null;
+        }
+
+        try {
             Order order = orderDao.findById(orderId);
 
             if (order == null) {
@@ -91,27 +100,30 @@ public class OrderService {
                 log.warn("Invalid event: {} for current state: {}", event, currentState);
                 return currentState;
             }
+        } finally {
+            lockDao.releaseLock(orderId);
         }
     }
 
     private void scheduleTimeout(Order order, Transition transition) {
         scheduler.schedule(() -> {
-            synchronized (getOrderLock(order.id())) {
-                Order latestOrder = orderDao.findById(order.id());
-                if (latestOrder != null && latestOrder.state() == order.state()) {
-                    OrderState timeoutState = transition.timeoutFallbackState();
-                    if (timeoutState != null) {
-                        latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
-                        orderDao.save(latestOrder);
-                        log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+            String owner = UUID.randomUUID().toString();
+            if (lockDao.acquireLock(order.id(), owner)) {
+                try {
+                    Order latestOrder = orderDao.findById(order.id());
+                    if (latestOrder != null && latestOrder.state() == order.state()) {
+                        OrderState timeoutState = transition.timeoutFallbackState();
+                        if (timeoutState != null) {
+                            latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
+                            orderDao.save(latestOrder);
+                            log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+                        }
                     }
+                } finally {
+                    lockDao.releaseLock(order.id());
                 }
             }
         }, transition.timeoutSeconds(), TimeUnit.SECONDS);
-    }
-
-    private Object getOrderLock(String orderId) {
-        return orderLocks.computeIfAbsent(orderId, k -> new Object());
     }
 
     public OrderState getCurrentState(String orderId) {
