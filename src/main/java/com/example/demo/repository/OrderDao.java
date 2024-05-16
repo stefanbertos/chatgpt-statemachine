@@ -5,9 +5,9 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
-
 @Repository
 public class OrderDao {
 
@@ -17,6 +17,7 @@ public class OrderDao {
         this.mongoTemplate = mongoTemplate;
     }
 
+    @Transactional
     public Order save(Order order) {
         return mongoTemplate.save(order);
     }

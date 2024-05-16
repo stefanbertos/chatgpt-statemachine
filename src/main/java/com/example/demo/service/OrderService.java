@@ -2,6 +2,11 @@ package com.example.demo.service;
 import com.example.demo.dto.*;
 import com.example.demo.repository.LockDao;
 import com.example.demo.repository.OrderDao;
+
+
+import com.mongodb.client.ClientSession;
+import com.mongodb.client.MongoClient;
+import com.mongodb.client.TransactionBody;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
@@ -21,12 +26,14 @@ public class OrderService {
 
     private final OrderDao orderDao;
     private final LockDao lockDao;
+    private final MongoClient mongoClient;
     private Map<OrderState, Map<OrderEvent, Transition>> transitionMap;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10);
 
-    public OrderService(OrderDao orderDao, LockDao lockDao) {
+    public OrderService(OrderDao orderDao, LockDao lockDao, MongoClient mongoClient) {
         this.orderDao = orderDao;
         this.lockDao = lockDao;
+        this.mongoClient = mongoClient;
     }
 
     @PostConstruct
@@ -63,65 +70,74 @@ public class OrderService {
     }
 
     public OrderState handleEvent(String orderId, OrderEvent event) {
-        String owner = UUID.randomUUID().toString();
-        if (!lockDao.acquireLock(orderId, owner)) {
-            log.warn("Could not acquire lock for order ID: {}", orderId);
-            return null;
-        }
-
-        try {
-            Order order = orderDao.findById(orderId);
-
-            if (order == null) {
-                if (event == OrderEvent.ORDER_CREATED) {
-                    // Initialize a new order
-                    order = new Order(orderId);
-                    log.info("New order created with ID: {}", orderId);
-                } else {
-                    log.warn("Invalid order ID: {} for event: {}", orderId, event);
+        try (ClientSession session = mongoClient.startSession()) {
+            return session.withTransaction(() -> {
+                String owner = UUID.randomUUID().toString();
+                if (!lockDao.acquireLock(orderId, owner)) {
+                    log.warn("Could not acquire lock for order ID: {}", orderId);
                     return null;
                 }
-            }
 
-            OrderState currentState = order.state();
-            Transition transition = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
+                try {
+                    Order order = orderDao.findById(orderId);
 
-            if (transition != null) {
-                order = order.addStateTransition(currentState, transition.targetState(), event.toString());
-                orderDao.save(order);
-                log.info("Transitioned from {} to {} on event {}", currentState, transition.targetState(), event);
+                    if (order == null) {
+                        if (event == OrderEvent.ORDER_CREATED) {
+                            // Initialize a new order
+                            order = new Order(orderId);
+                            log.info("New order created with ID: {}", orderId);
+                        } else {
+                            log.warn("Invalid order ID: {} for event: {}", orderId, event);
+                            return null;
+                        }
+                    }
 
-                if (transition.timeoutSeconds() > 0) {
-                    scheduleTimeout(order, transition);
+                    OrderState currentState = order.state();
+                    Transition transition = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
+
+                    if (transition != null) {
+                        order = order.addStateTransition(currentState, transition.targetState(), event.toString());
+                        orderDao.save(order);
+                        log.info("Transitioned from {} to {} on event {}", currentState, transition.targetState(), event);
+
+                        if (transition.timeoutSeconds() > 0) {
+                            scheduleTimeout(order, transition);
+                        }
+
+                        return transition.targetState();
+                    } else {
+                        log.warn("Invalid event: {} for current state: {}", event, currentState);
+                        return currentState;
+                    }
+                } finally {
+                    lockDao.releaseLock(orderId);
                 }
-
-                return transition.targetState();
-            } else {
-                log.warn("Invalid event: {} for current state: {}", event, currentState);
-                return currentState;
-            }
-        } finally {
-            lockDao.releaseLock(orderId);
+            });
         }
     }
 
     private void scheduleTimeout(Order order, Transition transition) {
         scheduler.schedule(() -> {
-            String owner = UUID.randomUUID().toString();
-            if (lockDao.acquireLock(order.id(), owner)) {
-                try {
-                    Order latestOrder = orderDao.findById(order.id());
-                    if (latestOrder != null && latestOrder.state() == order.state()) {
-                        OrderState timeoutState = transition.timeoutFallbackState();
-                        if (timeoutState != null) {
-                            latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
-                            orderDao.save(latestOrder);
-                            log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+            try (ClientSession session = mongoClient.startSession()) {
+                session.withTransaction((TransactionBody<Void>) () -> {
+                    String owner = UUID.randomUUID().toString();
+                    if (lockDao.acquireLock(order.id(), owner)) {
+                        try {
+                            Order latestOrder = orderDao.findById(order.id());
+                            if (latestOrder != null && latestOrder.state() == order.state()) {
+                                OrderState timeoutState = transition.timeoutFallbackState();
+                                if (timeoutState != null) {
+                                    latestOrder = latestOrder.addStateTransition(latestOrder.state(), timeoutState, "Timeout");
+                                    orderDao.save(latestOrder);
+                                    log.info("Order {} transitioned to {} due to timeout", latestOrder.id(), timeoutState);
+                                }
+                            }
+                        } finally {
+                            lockDao.releaseLock(order.id());
                         }
                     }
-                } finally {
-                    lockDao.releaseLock(order.id());
-                }
+                    return null;
+                });
             }
         }, transition.timeoutSeconds(), TimeUnit.SECONDS);
     }
