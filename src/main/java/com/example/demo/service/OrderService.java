@@ -27,20 +27,22 @@ public class OrderService {
     private final OrderDao orderDao;
     private final LockDao lockDao;
     private final MongoClient mongoClient;
+    private final PaymentAction paymentAction; // Inject the PaymentAction
     private Map<OrderState, Map<OrderEvent, Transition>> transitionMap;
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(10);
 
-    public OrderService(OrderDao orderDao, LockDao lockDao, MongoClient mongoClient) {
+    public OrderService(OrderDao orderDao, LockDao lockDao, MongoClient mongoClient, PaymentAction paymentAction) {
         this.orderDao = orderDao;
         this.lockDao = lockDao;
         this.mongoClient = mongoClient;
+        this.paymentAction = paymentAction;
     }
 
     @PostConstruct
     private void init() {
         TransitionBuilder builder = new TransitionBuilder();
         builder.addTransition(OrderState.NEW_ORDER, OrderEvent.ORDER_CREATED, OrderState.PENDING_PAYMENT, 30, OrderState.CANCELLED)
-                .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.PAYMENT_CONFIRMED, OrderState.PAYMENT_RECEIVED)
+                .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.PAYMENT_CONFIRMED, OrderState.PAYMENT_RECEIVED, 0, null, paymentAction)
                 .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.PAYMENT_FAILED, OrderState.CANCELLED)
                 .addTransition(OrderState.PENDING_PAYMENT, OrderEvent.CUSTOMER_CANCELLATION, OrderState.CANCELLED)
                 .addTransition(OrderState.PAYMENT_RECEIVED, OrderEvent.ORDER_PACKED, OrderState.PROCESSING)
@@ -96,6 +98,13 @@ public class OrderService {
                     Transition transition = transitionMap.getOrDefault(currentState, new HashMap<>()).get(event);
 
                     if (transition != null) {
+                        if (transition.action() != null) {
+                            if (!transition.action().execute(order)) {
+                                log.warn("Action failed for order ID: {}", orderId);
+                                return currentState;
+                            }
+                        }
+
                         order = order.addStateTransition(currentState, transition.targetState(), event.toString());
                         orderDao.save(order);
                         log.info("Transitioned from {} to {} on event {}", currentState, transition.targetState(), event);
