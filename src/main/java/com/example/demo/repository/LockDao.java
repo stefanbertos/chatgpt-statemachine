@@ -2,20 +2,17 @@ package com.example.demo.repository;
 
 
 import com.example.demo.dto.Lock;
+import lombok.RequiredArgsConstructor;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
+@RequiredArgsConstructor
 @Repository
 public class LockDao {
-
     private final MongoTemplate mongoTemplate;
-
-    public LockDao(MongoTemplate mongoTemplate) {
-        this.mongoTemplate = mongoTemplate;
-    }
 
     @Transactional
     public boolean acquireLock(String orderId, String owner) {
